@@ -15,24 +15,142 @@ in for an embedding exactly like the simulator's box color does — swap
 `_mean_color` for a real embedding model later and IdentityDB is unaffected.
 """
 
+import os
+import threading
+import time
 from typing import Dict, List, Set, Tuple
+
+# RTSP over UDP drops/corrupts frames on the backlot Wi-Fi; force TCP. Must be
+# set before cv2 opens the stream. Harmless for webcam/file sources.
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+# Quiet libav's per-packet decode warnings (stray cu_qp_delta / missing POC
+# ref messages are expected noise on a real RTSP link, not fatal — a genuinely
+# dead stream still surfaces as our own RuntimeError from a failed read()).
+os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 
 import cv2
 from ultralytics import YOLO
 
-from .. import config
+from .. import config, notifier
 from ..types import Color, RawObservation
 from .base import FrameSource
 
 Box = Tuple[int, int, int, int]  # x1, y1, x2, y2 in pixel coords
 
 
+class _DirectReader:
+    """Plain synchronous read, for a video-file source."""
+
+    def __init__(self, cap: cv2.VideoCapture):
+        self._cap = cap
+
+    def read(self):
+        ok, frame = self._cap.read()
+        if not ok:
+            raise RuntimeError("camera/video source ended or disconnected")
+        return frame
+
+    def release(self) -> None:
+        self._cap.release()
+
+
+class _LatestFrameReader:
+    """Drains a capture on its own thread and hands out only the newest frame.
+
+    YOLO on CPU runs at ~1 FPS while the Reolink pushes 30; read straight off
+    cv2.VideoCapture and you get ever-staler buffered frames until the RTSP
+    connection stalls outright. This thread keeps the buffer empty so step()
+    always sees a fresh frame. Used for live streams/webcams only — a video
+    file wants to be consumed frame by frame, not raced through.
+
+    This is meant to run unattended for 72h+ at a stretch, so a dropped link
+    (wifi hiccup, camera reboot) reconnects with backoff instead of killing
+    the whole app — step() just keeps returning the last good frame while
+    this reconnects in the background, and an email goes out on both the
+    drop and the recovery so it isn't a silent gap in the violation clock.
+    """
+
+    def __init__(self, source):
+        self._source = source
+        self._lock = threading.Lock()
+        self._frame = None
+        self._stop = False
+        self._cap = self._open()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _open(self) -> cv2.VideoCapture:
+        cap = cv2.VideoCapture(self._source)
+        if not cap.isOpened():
+            raise RuntimeError(f"could not open video source {self._source!r}")
+        return cap
+
+    def _loop(self) -> None:
+        while not self._stop:
+            ok, frame = self._cap.read()
+            if ok:
+                with self._lock:
+                    self._frame = frame
+                continue
+            self._reconnect()
+
+    def _reconnect(self) -> None:
+        down_since = time.time()
+        print("[camera] stream dropped, reconnecting...")
+        notifier.send_email(
+            subject="BigBack: camera stream down",
+            body="The backlot RTSP stream dropped. Attempting to reconnect automatically "
+                 "— violation clocks keep running off wall-clock time regardless.",
+        )
+        self._cap.release()
+
+        backoff = list(config.RECONNECT_BACKOFF_SECONDS)
+        attempt = 0
+        while not self._stop:
+            try:
+                self._cap = self._open()
+                break
+            except RuntimeError:
+                delay = backoff[min(attempt, len(backoff) - 1)]
+                attempt += 1
+                time.sleep(delay)
+        else:
+            return  # release() was called mid-reconnect; give up quietly
+
+        outage_min = (time.time() - down_since) / 60
+        print(f"[camera] reconnected after {outage_min:.1f} min")
+        notifier.send_email(
+            subject="BigBack: camera stream back up",
+            body=f"The backlot RTSP stream reconnected after {outage_min:.1f} min down.",
+        )
+
+    def read(self):
+        # block briefly for the very first frame after connect
+        for _ in range(100):
+            with self._lock:
+                if self._frame is not None:
+                    return self._frame
+            time.sleep(0.05)
+        raise RuntimeError("no frame from source within 5s of connecting")
+
+    def release(self) -> None:
+        self._stop = True
+        self._thread.join(timeout=1.0)
+        self._cap.release()
+
+
 class CameraSource(FrameSource):
     def __init__(self, video_source=None):
         source = config.CAMERA_SOURCE if video_source is None else video_source
-        self._cap = cv2.VideoCapture(source)
-        if not self._cap.isOpened():
-            raise RuntimeError(f"could not open video source {source!r}")
+        is_stream = isinstance(source, int) or (isinstance(source, str) and "://" in source)
+
+        if is_stream:
+            self._reader = _LatestFrameReader(source)  # owns connect + reconnect
+        else:
+            cap = cv2.VideoCapture(source)
+            if not cap.isOpened():
+                raise RuntimeError(f"could not open video source {source!r}")
+            self._reader = _DirectReader(cap)
 
         self._model = YOLO(config.YOLO_MODEL)
         self._known_ids: Set[int] = set()  # every track id ever seen, so a leave can be confirmed
@@ -40,12 +158,16 @@ class CameraSource(FrameSource):
         self.last_boxes: List[Tuple[int, Box]] = []  # (track_id, box) currently visible, for viz_cv
 
     def step(self, now_hours: float) -> Dict[int, RawObservation]:
-        ok, frame = self._cap.read()
-        if not ok:
-            raise RuntimeError("camera/video source ended or disconnected")
-        self.last_frame = frame
+        frame = self._reader.read()
+
+        n = max(1, config.CAMERA_DOWNSCALE)
+        if n > 1:
+            h, w = frame.shape[:2]
+            frame = cv2.resize(frame, (w // n, h // n), interpolation=cv2.INTER_AREA)
+        self.last_frame = frame  # everything downstream works in this (downscaled) space
 
         results = self._model.track(frame, classes=config.YOLO_CLASSES, conf=config.YOLO_CONF,
+                                     imgsz=config.YOLO_IMGSZ, tracker=config.YOLO_TRACKER,
                                      persist=True, verbose=False)
 
         current: Dict[int, RawObservation] = {}
@@ -74,7 +196,7 @@ class CameraSource(FrameSource):
         return None
 
     def release(self) -> None:
-        self._cap.release()
+        self._reader.release()
 
 
 def _mean_color(frame, x1: float, y1: float, x2: float, y2: float) -> Color:

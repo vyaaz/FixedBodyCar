@@ -35,8 +35,13 @@ class Pipeline:
 
         for event in self.state_machine.update(obs):
             if isinstance(event, ParkEvent):
-                car_id = self.identity.match_or_register(event.color)
+                car_id, is_new = self.identity.match_or_register(
+                    event.color, exclude=self.timers.active_car_ids())
                 self.timers.on_park(event.spot_id, car_id, self.now)
+                if is_new:
+                    crop_for = getattr(self.source, "crop_for", None)
+                    photo = crop_for(event.spot_id) if crop_for else None
+                    notifier.new_car_notice(car_id, event.color, photo)
             else:
                 self.timers.on_leave(event.spot_id, self.now)
 

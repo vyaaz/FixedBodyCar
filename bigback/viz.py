@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 from . import config
+from .timer_service import hms
 
 EMPTY_COLOR = (0.9, 0.9, 0.9)
 VIOLATION_COLOR = "#FFD400"  # yellow highlight for spots/cars over the 72h limit
@@ -45,7 +46,7 @@ def run(pipeline, interval_ms: int = config.TICK_INTERVAL_MS):
                 rect.set_facecolor(tuple(c / 255 for c in snap.color))
                 rect.set_edgecolor(VIOLATION_COLOR if snap.violating else "black")
                 rect.set_linewidth(4 if snap.violating else 1)
-                timer = f"{snap.elapsed_hours:.1f}h / {config.VIOLATION_HOURS:.0f}h"
+                timer = f"{hms(snap.elapsed_hours)} / {hms(config.VIOLATION_HOURS)}"
                 label.set_text(f"{snap.car_id}\n{timer}" + (" ⚠" if snap.violating else ""))
             else:
                 rect.set_facecolor(EMPTY_COLOR)
@@ -83,7 +84,7 @@ def _draw_roster(ax, pipeline):
         clock = pipeline.timers.clock_for(car.car_id)
         if clock and clock.spot_id is not None:
             elapsed = pipeline.timers.elapsed_hours(car.car_id, pipeline.now)
-            status = f"spot {clock.spot_id} · {elapsed:.1f}h"
+            status = f"spot {clock.spot_id} · {hms(elapsed)}"
             if clock.flagged:
                 status += " ⚠"
         else:
@@ -118,7 +119,7 @@ def _draw_violations(ax, pipeline):
 
         where = f"spot {clock.spot_id}" if clock.spot_id is not None else "off-lot"
         elapsed = pipeline.now - clock.park_start
-        status = f"{where} · {elapsed:.1f}h ⚠"
+        status = f"{where} · {hms(elapsed)} ⚠"
         _draw_entry(ax, y, car, status, edgecolor=VIOLATION_COLOR)
 
 

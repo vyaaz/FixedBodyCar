@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from . import config
+from .timer_service import hms
 
 EMPTY_COLOR_BGR = (200, 200, 200)
 VIOLATION_COLOR_BGR = (0, 212, 255)  # yellow (BGR) for spots/cars over the 72h limit
@@ -34,14 +35,20 @@ def run(pipeline, window_name: str = "BigBack — live") -> None:
                 edge = VIOLATION_COLOR_BGR if snap.violating else (0, 200, 0)
                 thickness = 4 if snap.violating else 2
                 cv2.rectangle(frame, (x1, y1), (x2, y2), edge, thickness)
-                label = f"{snap.car_id} {snap.elapsed_hours:.1f}h/{config.VIOLATION_HOURS:.0f}h"
+                label = f"{snap.car_id} {hms(snap.elapsed_hours)}/{hms(config.VIOLATION_HOURS)}"
                 if snap.violating:
                     label += " !OVER"
                 cv2.putText(frame, label, (x1 + 4, max(16, y1 - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, edge, 2, cv2.LINE_AA)
 
             panel = _build_panel(frame.shape[0], pipeline)
-            cv2.imshow(window_name, np.hstack([frame, panel]))
+            composited = np.hstack([frame, panel])
+            scale = min(config.DISPLAY_MAX_WIDTH / composited.shape[1],
+                        config.DISPLAY_MAX_HEIGHT / composited.shape[0], 1.0)
+            if scale < 1.0:
+                composited = cv2.resize(composited, None, fx=scale, fy=scale,
+                                        interpolation=cv2.INTER_AREA)
+            cv2.imshow(window_name, composited)
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
@@ -76,7 +83,7 @@ def _build_panel(height: int, pipeline) -> np.ndarray:
         clock = pipeline.timers.clock_for(car.car_id)
         if clock and clock.spot_id is not None:
             elapsed = pipeline.timers.elapsed_hours(car.car_id, pipeline.now)
-            status = f"spot {clock.spot_id} - {elapsed:.1f}h" + (" !" if clock.flagged else "")
+            status = f"spot {clock.spot_id} - {hms(elapsed)}" + (" !" if clock.flagged else "")
         else:
             status = "off-lot"
         cv2.rectangle(panel, (10, y - 12), (28, y + 2), _bgr(car.color), -1)
@@ -102,7 +109,7 @@ def _build_panel(height: int, pipeline) -> np.ndarray:
         elapsed = pipeline.now - clock.park_start
         cv2.rectangle(panel, (10, y - 12), (28, y + 2), _bgr(car.color), -1)
         cv2.rectangle(panel, (10, y - 12), (28, y + 2), VIOLATION_COLOR_BGR, 2)
-        cv2.putText(panel, f"{car.car_id} {where} {elapsed:.1f}h", (34, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+        cv2.putText(panel, f"{car.car_id} {where} {hms(elapsed)}", (34, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (0, 0, 0), 1, cv2.LINE_AA)
         y += 22
 
