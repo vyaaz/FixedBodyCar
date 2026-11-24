@@ -5,7 +5,10 @@ each other's internals."""
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-Color = Tuple[int, int, int]
+# (r, g, b) for the simulator's flat box colors. CameraSource's real embedding
+# is several RGB bands concatenated (see camera.py's _color_embedding) — still
+# fixed-length within a single run, which is all IdentityDB's distance math needs.
+Color = Tuple[int, ...]
 
 
 @dataclass

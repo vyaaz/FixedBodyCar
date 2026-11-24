@@ -12,7 +12,14 @@ VIOLATION_HOURS = 72.0        # max continuous park time
 COOLDOWN_HOURS = 24.0          # must sit off-lot this long before the clock resets (rule: 5-10h)
 DEBOUNCE_TICKS = 2            # ticks a raw reading must hold before it's trusted
 
-IDENTITY_MATCH_THRESHOLD = 30  # max color-distance to call two sightings "the same car"
+IDENTITY_MATCH_THRESHOLD = 30  # max RGB distance to call two sightings "the same car" (sim mode)
+# Camera mode compares VehicleDINO Re-ID embeddings via cosine distance
+# (bigback/source/reid.py), not RGB — a completely different scale from the
+# sim's (0 = identical direction, 2 = opposite; "different car" is typically
+# well under 1.0 for a normalized embedding space). Unverified starting
+# guess; retune using the real dist= values identity.py prints to the
+# console once the camera's on real footage with multiple cars in frame.
+CAMERA_IDENTITY_MATCH_THRESHOLD = 0.4
 
 TICK_INTERVAL_MS = 400        # wall-clock ms between animation frames
 # run_sim.py's clock. False => the sim runs on real wall-clock time, so 72h means 72 real hours
@@ -31,6 +38,13 @@ SIM_HOURS_PER_REAL_SECOND = VIOLATION_HOURS / 20  # only used when CAMERA_DEMO_S
 VIOLATIONS_DIR = Path(__file__).resolve().parent.parent / "violations"  # saved photo per violation
 DETECTIONS_DIR = Path(__file__).resolve().parent.parent / "detections"  # saved photo per newly-tagged car
 EMAIL_RECIPIENT = "vyaas.mohan@gmail.com"  # default "To" for violation-notice emails
+
+# run_camera.py's known cars + their clocks, re-saved every tick. Without
+# this, every restart (a code update, a crash, a reboot) forgets every car
+# and silently restarts its 72h clock from zero — the exact bug that looked
+# like "4 different cars all showing the same elapsed time" (they'd all just
+# been re-registered at the same recent restart).
+STATE_PATH = Path(__file__).resolve().parent.parent / "bigback_state.json"
 
 # camera stream reconnect backoff (seconds), cycled then held at the last value
 RECONNECT_BACKOFF_SECONDS = [2, 5, 10, 30]

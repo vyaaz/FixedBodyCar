@@ -54,13 +54,11 @@ def run(pipeline, window_name: str = "BigBack — live") -> None:
                 break
     finally:
         cv2.destroyAllWindows()
-        release = getattr(pipeline.source, "release", None)
-        if release:
-            release()
+        pipeline.close()
 
 
 def _bgr(color_rgb):
-    r, g, b = color_rgb
+    r, g, b = color_rgb[:3]  # camera mode's embedding is >3 numbers; first band is the swatch
     return (int(b), int(g), int(r))
 
 
@@ -86,7 +84,7 @@ def _build_panel(height: int, pipeline) -> np.ndarray:
             status = f"spot {clock.spot_id} - {hms(elapsed)}" + (" !" if clock.flagged else "")
         else:
             status = "off-lot"
-        cv2.rectangle(panel, (10, y - 12), (28, y + 2), _bgr(car.color), -1)
+        cv2.rectangle(panel, (10, y - 12), (28, y + 2), _bgr(car.display_color), -1)
         cv2.rectangle(panel, (10, y - 12), (28, y + 2), (0, 0, 0), 1)
         cv2.putText(panel, f"{car.car_id} {status}", (34, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (0, 0, 0), 1, cv2.LINE_AA)
@@ -107,7 +105,7 @@ def _build_panel(height: int, pipeline) -> np.ndarray:
             break
         where = f"spot {clock.spot_id}" if clock.spot_id is not None else "off-lot"
         elapsed = pipeline.now - clock.park_start
-        cv2.rectangle(panel, (10, y - 12), (28, y + 2), _bgr(car.color), -1)
+        cv2.rectangle(panel, (10, y - 12), (28, y + 2), _bgr(car.display_color), -1)
         cv2.rectangle(panel, (10, y - 12), (28, y + 2), VIOLATION_COLOR_BGR, 2)
         cv2.putText(panel, f"{car.car_id} {where} {hms(elapsed)}", (34, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (0, 0, 0), 1, cv2.LINE_AA)

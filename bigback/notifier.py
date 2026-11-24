@@ -69,10 +69,15 @@ def send_email(subject: str, body: str, attachment_path: Optional[Path] = None) 
         msg.add_attachment(attachment_path.read_bytes(), maintype="image", subtype="png",
                             filename=attachment_path.name)
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(user, password)
-        smtp.send_message(msg)
-    print(f"[EMAIL] sent to {recipient}: {subject!r}")
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as smtp:
+            smtp.login(user, password)
+            smtp.send_message(msg)
+        print(f"[EMAIL] sent to {recipient}: {subject!r}")
+    except (smtplib.SMTPException, OSError) as e:
+        # this runs unattended for days — a transient network/SMTP hiccup
+        # should never take down the whole pipeline, just drop this one email
+        print(f"[EMAIL] FAILED to send to {recipient}: {subject!r} ({e})")
 
 
 def _save_photo(directory: Path, name: str, color: Optional[Color], photo=None) -> Path:
@@ -88,7 +93,8 @@ def _save_photo(directory: Path, name: str, color: Optional[Color], photo=None) 
         return path
 
     fig, ax = plt.subplots(figsize=(2, 2))
-    ax.add_patch(patches.Rectangle((0, 0), 1, 1, facecolor=tuple(c / 255 for c in (color or (128, 128, 128)))))
+    swatch_rgb = (color or (128, 128, 128))[:3]  # camera mode's embedding is >3 numbers; first band only
+    ax.add_patch(patches.Rectangle((0, 0), 1, 1, facecolor=tuple(c / 255 for c in swatch_rgb)))
     ax.text(0.5, 0.5, name, ha="center", va="center", fontsize=14, color="white", weight="bold")
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)

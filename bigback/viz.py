@@ -126,6 +126,6 @@ def _draw_violations(ax, pipeline):
 def _draw_entry(ax, y, car, status, edgecolor="black"):
     ax.add_patch(patches.Rectangle(
         (0.02, y - 0.025), 0.06, 0.06, transform=ax.transAxes,
-        facecolor=tuple(c / 255 for c in car.color), edgecolor=edgecolor, linewidth=2, clip_on=False,
+        facecolor=tuple(c / 255 for c in car.display_color), edgecolor=edgecolor, linewidth=2, clip_on=False,
     ))
     ax.text(0.12, y, f"{car.car_id}\n{status}", transform=ax.transAxes, va="center", fontsize=8)

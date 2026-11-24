@@ -7,12 +7,14 @@ timers, notifier) needs to change. Unlike the simulator's fixed spot ids
 persist=True), which keeps a car's id stable frame to frame) — there's no
 grid to map detections onto, timing just follows however many cars are
 actually in frame. If a track gets lost and reappears with a new id (e.g.
-after occlusion), IdentityDB's color match still recognizes it as the same
-car and TimerService's existing car_id-keyed clock carries on unaffected.
+after occlusion), IdentityDB's embedding match still recognizes it as the
+same car and TimerService's existing car_id-keyed clock carries on unaffected.
 
-A detected car's color is the mean RGB of its bounding-box crop, standing
-in for an embedding exactly like the simulator's box color does — swap
-`_mean_color` for a real embedding model later and IdentityDB is unaffected.
+Identity matching uses a real Re-ID embedding (reid.py's VehicleDINO), not a
+pixel color — see embed() below, which pipeline.py calls on a background
+thread (it's too slow, ~6-18s on CPU, to run inline). `RawObservation.color`
+is still a plain mean RGB, but it's cosmetic only now (panel swatch,
+synthetic violation photo), decoupled from how cars are actually told apart.
 """
 
 import os
@@ -34,6 +36,7 @@ from ultralytics import YOLO
 from .. import config, notifier
 from ..types import Color, RawObservation
 from .base import FrameSource
+from .reid import VehicleReID
 
 Box = Tuple[int, int, int, int]  # x1, y1, x2, y2 in pixel coords
 
@@ -153,6 +156,7 @@ class CameraSource(FrameSource):
             self._reader = _DirectReader(cap)
 
         self._model = YOLO(config.YOLO_MODEL)
+        self._reid = VehicleReID()
         self._known_ids: Set[int] = set()  # every track id ever seen, so a leave can be confirmed
         self.last_frame = None  # latest BGR frame, for viz_cv to draw on
         self.last_boxes: List[Tuple[int, Box]] = []  # (track_id, box) currently visible, for viz_cv
@@ -195,13 +199,27 @@ class CameraSource(FrameSource):
                 return crop if crop.size else None
         return None
 
+    def embed(self, crop):
+        """VehicleDINO Re-ID embedding for an already-grabbed crop (from
+        crop_for()) — the actual identity-matching feature (see
+        identity.py/reid.py). Takes ~6-18s on CPU, so pipeline.py runs this
+        on a background thread rather than calling it inline; this method
+        itself just forwards to the model, no lookup of live tracking state,
+        so it's safe to call from another thread after last_boxes has moved
+        on to a later tick."""
+        return self._reid.embed(crop)
+
     def release(self) -> None:
         self._reader.release()
 
 
 def _mean_color(frame, x1: float, y1: float, x2: float, y2: float) -> Color:
+    """Plain whole-box mean RGB — cosmetic only now (panel swatch, synthetic
+    violation photo). Real car identity is decided by VehicleReID.embed() in
+    embed_for() below, not this; a pixel mean isn't discriminative enough to
+    tell two same-colored cars apart (see CLAUDE.md)."""
     crop = frame[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)]
     if crop.size == 0:
         return (128, 128, 128)
     b, g, r = crop.reshape(-1, 3).mean(axis=0)
-    return (int(r), int(g), int(b))  # RGB, matches the Color convention used everywhere else
+    return (int(r), int(g), int(b))
